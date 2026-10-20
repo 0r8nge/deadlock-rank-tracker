@@ -10,11 +10,17 @@
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (!req || !req.ids || !req.ids.length) { document.title = "RT:alive"; return; }
-    var o = { n: req.n || 0, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {};
+    var o = { n: req.n || 0, req: req.ids, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {};
     Promise.all([
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { o.tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/rank?account_ids=" + req.ids.join(",")).then(function (a) { a.forEach(function (x) { o.ranks[x.account_id] = [x.rank, x.subrank]; }); }).catch(function (e) { o.err += "rank " + e + ";"; }),
-      g("/v1/assets/heroes").then(function (a) { a.forEach(function (x) { hid[String(x.name || "").toLowerCase()] = x.id; }); }).catch(function (e) { o.err += "heroes " + e + ";"; })
+      g("/v1/assets/heroes").then(function (a) {
+        a.forEach(function (x) {
+          var k = String(x.name || "").toLowerCase(); if (!k) return;
+          var good = x.player_selectable && !x.disabled && !x.in_development && !x.prerelease_only;
+          if (!(k in hid) || good) { hid[k] = x.id; if (good) hidGood[k] = 1; }
+        });
+      }).catch(function (e) { o.err += "heroes " + e + ";"; })
     ]).then(function () {
       return g("/v1/players/hero-stats?account_ids=" + req.ids.join(",")).then(function (a) {
         a.forEach(function (s) {
@@ -22,6 +28,7 @@
           t.m += s.matches_played; t.w += s.wins; t.k += s.kills; t.d += s.deaths; t.a += s.assists;
           var hn = String((req.heroes || {})[id] || "").toLowerCase();
           if (hn && hid[hn] === s.hero_id) t.h = [s.matches_played, s.wins, s.kills, s.deaths, s.assists];
+          t.hid = hid[hn] || 0;
         });
       }).catch(function (e) { o.err += "stats " + e + ";"; });
     }).then(function () { document.title = "RT:" + JSON.stringify(o); });
