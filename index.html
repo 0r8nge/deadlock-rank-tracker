@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>RT:alive</title></head>
+<body>
+<p>Deadlock Ranked Tracker bridge (by 0rangess_). Used by the in-game mod; it fetches public stats from api.deadlock-api.com.</p>
+<script>
+(function () {
+  var A = "https://api.deadlock-api.com";
+  function g(u) { return fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  function run() {
+    var req;
+    try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
+    if (!req || !req.ids || !req.ids.length) { document.title = "RT:alive"; return; }
+    var o = { n: req.n || 0, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {};
+    Promise.all([
+      g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { o.tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
+      g("/v1/players/rank?account_ids=" + req.ids.join(",")).then(function (a) { a.forEach(function (x) { o.ranks[x.account_id] = [x.rank, x.subrank]; }); }).catch(function (e) { o.err += "rank " + e + ";"; }),
+      g("/v1/assets/heroes").then(function (a) { a.forEach(function (x) { hid[String(x.name || "").toLowerCase()] = x.id; }); }).catch(function (e) { o.err += "heroes " + e + ";"; })
+    ]).then(function () {
+      return g("/v1/players/hero-stats?account_ids=" + req.ids.join(",")).then(function (a) {
+        a.forEach(function (s) {
+          var id = s.account_id, t = o.stats[id] || (o.stats[id] = { m: 0, w: 0, k: 0, d: 0, a: 0, h: null });
+          t.m += s.matches_played; t.w += s.wins; t.k += s.kills; t.d += s.deaths; t.a += s.assists;
+          var hn = String((req.heroes || {})[id] || "").toLowerCase();
+          if (hn && hid[hn] === s.hero_id) t.h = [s.matches_played, s.wins, s.kills, s.deaths, s.assists];
+        });
+      }).catch(function (e) { o.err += "stats " + e + ";"; });
+    }).then(function () { document.title = "RT:" + JSON.stringify(o); });
+  }
+  window.addEventListener("hashchange", run);
+  run();
+})();
+</script>
+</body></html>
