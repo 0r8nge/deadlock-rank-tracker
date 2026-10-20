@@ -10,7 +10,7 @@
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (!req || !req.ids || !req.ids.length) { document.title = "RT:alive"; return; }
-    var o = { n: req.n || 0, req: req.ids, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {};
+    var o = { n: req.n || 0, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {}, hidGood = {};
     Promise.all([
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { o.tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/rank?account_ids=" + req.ids.join(",")).then(function (a) { a.forEach(function (x) { o.ranks[x.account_id] = [x.rank, x.subrank]; }); }).catch(function (e) { o.err += "rank " + e + ";"; }),
