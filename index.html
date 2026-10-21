@@ -48,6 +48,11 @@
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
         return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time];
       });
+      // rank after each ranked match (badge = tier digits + subrank digit), oldest first
+      o.rh = mh.filter(function (m) { return m.ranked_display_badge; }).sort(function (a, b) { return (a.start_time || 0) - (b.start_time || 0); }).slice(-40).map(function (m) {
+        var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
+        return [m.ranked_display_badge, m.ranked_delta || 0, won, m.start_time || 0];
+      });
       document.title = "RP:" + JSON.stringify(o);
     });
   }
@@ -55,6 +60,15 @@
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (req && req.type === "profile") { profile(req); return; }
+    if (req && req.type === "hist") {
+      var h = { n: req.n || 0, me: req.me, mates: {}, enemies: {}, err: "" }, want = {};
+      (req.ids || []).forEach(function (x) { want[x] = 1; });
+      Promise.all([
+        g("/v1/players/" + req.me + "/mate-stats").then(function (a) { (a || []).forEach(function (x) { if (want[x.mate_id]) h.mates[x.mate_id] = [x.matches_played, x.wins]; }); }).catch(function (e) { h.err += "mates " + e + ";"; }),
+        g("/v1/players/" + req.me + "/enemy-stats").then(function (a) { (a || []).forEach(function (x) { if (want[x.enemy_id]) h.enemies[x.enemy_id] = [x.matches_played, x.wins]; }); }).catch(function (e) { h.err += "enemies " + e + ";"; })
+      ]).then(function () { document.title = "RH:" + JSON.stringify(h); });
+      return;
+    }
     if (req && req.type === "cfg") {
       var c = {};
       try { c = JSON.parse(localStorage.getItem("rt_cfg") || "{}") || {}; } catch (e) { c = {}; }
