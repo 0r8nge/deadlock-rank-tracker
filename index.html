@@ -5,6 +5,18 @@
 <script>
 (function () {
   var A = "https://api.deadlock-api.com";
+  // ↓↓↓ Paste your Cloudflare Worker URL between the quotes (e.g. "https://ranked-tracker-db.yourname.workers.dev")
+  var DB_URL = "";
+  // ↑↑↑ Leave it empty to turn the Ranked Tracker match database off.
+  function db(path, opt) {
+    if (!DB_URL) return Promise.resolve(null);
+    return fetch(DB_URL.replace(/\/+$/, "") + path, opt).then(function (r) { return r.json(); });
+  }
+  // matches from the Ranked Tracker database that the Deadlock API doesn't have (same start time within 20 min = same match)
+  function extras(ours, apiMatches) {
+    var starts = (apiMatches || []).map(function (m) { return m.start_time || 0; });
+    return (ours || []).filter(function (x) { return !starts.some(function (s) { return Math.abs(s - x[0]) < 1200; }); });
+  }
   function g(u) { return fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
   // mode: all | ranked | unranked | street_brawl
   var MODES = {
@@ -15,12 +27,13 @@
   };
   function profile(req) {
     var id = req.id, mode = MODES[req.mode] ? req.mode : "all", M = MODES[mode];
-    var o = { n: req.n || 0, id: id, mode: mode, rank: null, tier: null, heroes: [], recent: [], ov: null, err: "" }, names = {}, tiers = {}, hsAll = [], mh = [];
+    var o = { n: req.n || 0, id: id, mode: mode, rank: null, tier: null, heroes: [], recent: [], ov: null, err: "" }, names = {}, tiers = {}, hsAll = [], mh = [], ours = [];
     var jobs = [
       g("/v1/assets/heroes").then(function (a) { a.forEach(function (x) { if (x.player_selectable && !x.disabled) names[x.id] = x.name; else if (!(x.id in names)) names[x.id] = x.name; }); }).catch(function (e) { o.err += "heroes " + e + ";"; }),
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/" + id + "/rank").then(function (r) { o.rank = [r.rank, r.subrank]; }).catch(function (e) { o.err += "rank " + e + ";"; }),
-      g("/v1/players/" + id + "/match-history").then(function (a) { mh = a || []; }).catch(function (e) { o.err += "history " + e + ";"; })
+      g("/v1/players/" + id + "/match-history").then(function (a) { mh = a || []; }).catch(function (e) { o.err += "history " + e + ";"; }),
+      db("/players?ids=" + id).then(function (r) { ours = (r && r.players && r.players[id]) || []; }).catch(function (e) { o.err += "db " + e + ";"; })
     ];
     M.calls.forEach(function (q) {
       jobs.push(g("/v1/players/hero-stats?account_ids=" + id + q).then(function (a) { hsAll = hsAll.concat(a || []); }).catch(function (e) { o.err += "stats " + e + ";"; }));
@@ -53,6 +66,25 @@
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
         return [m.ranked_display_badge, m.ranked_delta || 0, won, m.start_time || 0];
       });
+      // add matches only the Ranked Tracker database has (mode filter: our matches only know normal vs street brawl)
+      var ex = extras(ours.filter(function (x) { return mode === "all" || (mode === "street_brawl" ? x[2] === "street_brawl" : false); }), mh);
+      o.ext = ex.length;
+      if (ex.length) {
+        var known = ex.filter(function (x) { return x[4] !== null; });
+        if (known.length) {
+          if (!o.ov) o.ov = [0, 0, 0, 0, 0, null, null, null, null, null, null, null];
+          known.forEach(function (x) { o.ov[0]++; o.ov[1] += x[4]; o.ov[2] += x[5]; o.ov[3] += x[6]; o.ov[4] += x[7]; });
+          var hb = {}; o.heroes.forEach(function (h) { hb[String(h[0]).toLowerCase()] = h; });
+          known.forEach(function (x) {
+            var h = hb[String(x[3]).toLowerCase()];
+            if (!h) { h = hb[String(x[3]).toLowerCase()] = [x[3], 0, 0, 0, 0, 0]; o.heroes.push(h); }
+            h[1]++; h[2] += x[4]; h[3] += x[5]; h[4] += x[6]; h[5] += x[7];
+          });
+          o.heroes.sort(function (a, b) { return b[1] - a[1]; }); o.heroes = o.heroes.slice(0, 5);
+        }
+        o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1]; }))
+          .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); }).slice(0, 10);
+      }
       document.title = "RP:" + JSON.stringify(o);
     });
   }
@@ -60,6 +92,13 @@
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (req && req.type === "profile") { profile(req); return; }
+    if (req && req.type === "upload") {
+      if (!DB_URL) { document.title = "RU:" + JSON.stringify({ n: req.n || 0, ok: false, error: "no database set" }); return; }
+      db("/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req.data) })
+        .then(function (r) { document.title = "RU:" + JSON.stringify({ n: req.n || 0, ok: !!(r && r.ok), merged: r && r.merged, error: r && r.error }); })
+        .catch(function (e) { document.title = "RU:" + JSON.stringify({ n: req.n || 0, ok: false, error: String(e) }); });
+      return;
+    }
     if (req && req.type === "hist") {
       var h = { n: req.n || 0, me: req.me, mates: {}, enemies: {}, err: "" }, want = {};
       (req.ids || []).forEach(function (x) { want[x] = 1; });
@@ -99,6 +138,25 @@
           t.hid = hid[hn] || 0;
         });
       }).catch(function (e) { o.err += "stats " + e + ";"; });
+    }).then(function () {
+      if (!DB_URL) return;
+      return db("/players?ids=" + req.ids.join(",")).then(function (r) {
+        var P = (r && r.players) || {}, have = Object.keys(P).filter(function (id) { return P[id].length; });
+        return Promise.all(have.map(function (id) {
+          return g("/v1/players/" + id + "/match-history").catch(function () { return []; }).then(function (mh) {
+            var ex = extras(P[id].filter(function (x) { return x[2] !== "street_brawl"; }), mh);
+            if (!ex.length) return;
+            var t = o.stats[id] || (o.stats[id] = { m: 0, w: 0, k: 0, d: 0, a: 0, h: null });
+            var hn = String((req.heroes || {})[id] || "").toLowerCase();
+            t.x = ex.length;
+            ex.forEach(function (x) {
+              if (x[4] === null) return;                 // result unknown: not counted in totals
+              t.m++; t.w += x[4]; t.k += x[5]; t.d += x[6]; t.a += x[7];
+              if (hn && String(x[3]).toLowerCase() === hn) { t.h = t.h || [0, 0, 0, 0, 0]; t.h[0]++; t.h[1] += x[4]; t.h[2] += x[5]; t.h[3] += x[6]; t.h[4] += x[7]; }
+            });
+          });
+        }));
+      }).catch(function (e) { o.err += "db " + e + ";"; });
     }).then(function () { document.title = "RT:" + JSON.stringify(o); });
   }
   window.addEventListener("hashchange", run);
