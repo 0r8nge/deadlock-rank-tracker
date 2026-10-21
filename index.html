@@ -6,34 +6,48 @@
 (function () {
   var A = "https://api.deadlock-api.com";
   function g(u) { return fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  // mode: all | ranked | unranked | street_brawl
+  var MODES = {
+    all:          { calls: ["&game_mode=normal&match_mode=ranked,unranked", "&game_mode=street_brawl"], keep: function (m) { return (m.game_mode === 1 && (m.match_mode === 1 || m.match_mode === 4)) || m.game_mode === 4; } },
+    ranked:       { calls: ["&game_mode=normal&match_mode=ranked"],   keep: function (m) { return m.game_mode === 1 && m.match_mode === 4; } },
+    unranked:     { calls: ["&game_mode=normal&match_mode=unranked"], keep: function (m) { return m.game_mode === 1 && m.match_mode === 1; } },
+    street_brawl: { calls: ["&game_mode=street_brawl"],               keep: function (m) { return m.game_mode === 4; } }
+  };
   function profile(req) {
-    var id = req.id, o = { n: req.n || 0, id: id, rank: null, tier: null, heroes: [], recent: [], ov: null, err: "" }, names = {}, tiers = {};
-    Promise.all([
+    var id = req.id, mode = MODES[req.mode] ? req.mode : "all", M = MODES[mode];
+    var o = { n: req.n || 0, id: id, mode: mode, rank: null, tier: null, heroes: [], recent: [], ov: null, err: "" }, names = {}, tiers = {}, hsAll = [], mh = [];
+    var jobs = [
       g("/v1/assets/heroes").then(function (a) { a.forEach(function (x) { if (x.player_selectable && !x.disabled) names[x.id] = x.name; else if (!(x.id in names)) names[x.id] = x.name; }); }).catch(function (e) { o.err += "heroes " + e + ";"; }),
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/" + id + "/rank").then(function (r) { o.rank = [r.rank, r.subrank]; }).catch(function (e) { o.err += "rank " + e + ";"; }),
-      g("/v1/players/hero-stats?account_ids=" + id).then(function (a) { o._hs = a; }).catch(function (e) { o.err += "stats " + e + ";"; }),
-      g("/v1/players/" + id + "/match-history").then(function (a) { o._mh = a; }).catch(function (e) { o.err += "history " + e + ";"; })
-    ]).then(function () {
+      g("/v1/players/" + id + "/match-history").then(function (a) { mh = a || []; }).catch(function (e) { o.err += "history " + e + ";"; })
+    ];
+    M.calls.forEach(function (q) {
+      jobs.push(g("/v1/players/hero-stats?account_ids=" + id + q).then(function (a) { hsAll = hsAll.concat(a || []); }).catch(function (e) { o.err += "stats " + e + ";"; }));
+    });
+    Promise.all(jobs).then(function () {
       if (o.rank) o.tier = tiers[o.rank[0]] || null;
-      var hs = o._hs || [], T = { m: 0, w: 0, k: 0, d: 0, a: 0, t: 0, dmg: 0, tak: 0, nw: 0, obj: 0, lh: 0, acc: 0, crit: 0 };
-      hs.forEach(function (s) {
+      // merge per hero (the "all" mode combines normal + street brawl)
+      var by = {};
+      hsAll.forEach(function (s) {
+        var h = by[s.hero_id] || (by[s.hero_id] = { id: s.hero_id, m: 0, w: 0, k: 0, d: 0, a: 0, t: 0, dmg: 0, tak: 0, nw: 0, obj: 0, lh: 0, acc: 0, crit: 0 });
         var m = s.matches_played || 0, mins = (s.time_played || 0) / 60;
-        T.m += m; T.w += s.wins || 0; T.k += s.kills || 0; T.d += s.deaths || 0; T.a += s.assists || 0; T.t += mins;
-        T.dmg += (s.damage_per_min || 0) * mins; T.tak += (s.damage_taken_per_min || 0) * mins; T.nw += (s.networth_per_min || 0) * mins;
-        T.obj += (s.obj_damage_per_min || 0) * mins; T.lh += (s.last_hits_per_min || 0) * mins;
-        T.acc += (s.accuracy || 0) * m; T.crit += (s.crit_shot_rate || 0) * m;
+        h.m += m; h.w += s.wins || 0; h.k += s.kills || 0; h.d += s.deaths || 0; h.a += s.assists || 0; h.t += mins;
+        h.dmg += (s.damage_per_min || 0) * mins; h.tak += (s.damage_taken_per_min || 0) * mins; h.nw += (s.networth_per_min || 0) * mins;
+        h.obj += (s.obj_damage_per_min || 0) * mins; h.lh += (s.last_hits_per_min || 0) * mins;
+        h.acc += (s.accuracy || 0) * m; h.crit += (s.crit_shot_rate || 0) * m;
       });
-      if (T.m) o.ov = [T.m, T.w, T.k, T.d, T.a, Math.round(T.dmg / Math.max(1, T.t)), Math.round(T.tak / Math.max(1, T.t)), Math.round(T.nw / Math.max(1, T.t)),
-                       Math.round(T.obj / Math.max(1, T.t)), +(T.lh / Math.max(1, T.t)).toFixed(1), +(100 * T.acc / T.m).toFixed(1), +(100 * T.crit / T.m).toFixed(1)];
-      hs.sort(function (a, b) { return (b.matches_played || 0) - (a.matches_played || 0); });
-      o.heroes = hs.slice(0, 5).map(function (s) { return [names[s.hero_id] || ("#" + s.hero_id), s.matches_played, s.wins, s.kills, s.deaths, s.assists]; });
-      var mh = (o._mh || []).slice().sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).slice(0, 10);
-      o.recent = mh.map(function (m) {
-        var won = m.player_team === m.match_result ? 1 : 0;
+      var hs = Object.keys(by).map(function (k) { return by[k]; }), T = { m: 0, w: 0, k: 0, d: 0, a: 0, t: 0, dmg: 0, tak: 0, nw: 0, obj: 0, lh: 0, acc: 0, crit: 0 };
+      hs.forEach(function (h) { Object.keys(T).forEach(function (k) { T[k] += h[k]; }); });
+      var tt = Math.max(1, T.t);
+      if (T.m) o.ov = [T.m, T.w, T.k, T.d, T.a, Math.round(T.dmg / tt), Math.round(T.tak / tt), Math.round(T.nw / tt), Math.round(T.obj / tt),
+                       +(T.lh / tt).toFixed(1), +(100 * T.acc / T.m).toFixed(1), +(100 * T.crit / T.m).toFixed(1)];
+      hs.sort(function (a, b) { return b.m - a.m; });
+      o.heroes = hs.slice(0, 5).map(function (h) { return [names[h.id] || ("#" + h.id), h.m, h.w, h.k, h.d, h.a]; });
+      o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).slice(0, 10).map(function (m) {
+        var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
         return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time];
       });
-      delete o._hs; delete o._mh;
       document.title = "RP:" + JSON.stringify(o);
     });
   }
@@ -41,6 +55,14 @@
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (req && req.type === "profile") { profile(req); return; }
+    if (req && req.type === "cfg") {
+      var c = {};
+      try { c = JSON.parse(localStorage.getItem("rt_cfg") || "{}") || {}; } catch (e) { c = {}; }
+      if (req.set) { Object.keys(req.set).forEach(function (k) { c[k] = req.set[k]; }); try { localStorage.setItem("rt_cfg", JSON.stringify(c)); } catch (e) { c.err = String(e); } }
+      c.n = req.n || 0;
+      document.title = "RC:" + JSON.stringify(c);
+      return;
+    }
     if (!req || !req.ids || !req.ids.length) { document.title = "RT:alive"; return; }
     var o = { n: req.n || 0, ranks: {}, stats: {}, tiers: {}, err: "" }, hid = {}, hidGood = {};
     Promise.all([
