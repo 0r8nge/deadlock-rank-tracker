@@ -6,7 +6,7 @@
 (function () {
   var A = "https://api.deadlock-api.com";
   // ↓↓↓ Paste your Cloudflare Worker URL between the quotes (e.g. "https://ranked-tracker-db.yourname.workers.dev")
-  var DB_URL = "";
+  var DB_URL = "https://ranked-tracker-db.luke-621.workers.dev";
   // ↑↑↑ Leave it empty to turn the Ranked Tracker match database off.
   function db(path, opt) {
     if (!DB_URL) return Promise.resolve(null);
