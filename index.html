@@ -33,7 +33,7 @@
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/" + id + "/rank").then(function (r) { o.rank = [r.rank, r.subrank]; }).catch(function (e) { o.err += "rank " + e + ";"; }),
       g("/v1/players/" + id + "/match-history").then(function (a) { mh = a || []; }).catch(function (e) { o.err += "history " + e + ";"; }),
-      db("/players?ids=" + id).then(function (r) { ours = (r && r.players && r.players[id]) || []; }).catch(function (e) { o.err += "db " + e + ";"; })
+      db("/players?limit=100&ids=" + id).then(function (r) { ours = (r && r.players && r.players[id]) || []; }).catch(function (e) { o.err += "db " + e + ";"; })
     ];
     M.calls.forEach(function (q) {
       jobs.push(g("/v1/players/hero-stats?account_ids=" + id + q).then(function (a) { hsAll = hsAll.concat(a || []); }).catch(function (e) { o.err += "stats " + e + ";"; }));
@@ -139,16 +139,17 @@
         });
       }).catch(function (e) { o.err += "stats " + e + ";"; });
     }).then(function () {
-      if (!DB_URL) return;
-      return db("/players?ids=" + req.ids.join(",")).then(function (r) {
+      if (!DB_URL || req.db === false) return;          // the mod only asks the database every 15 minutes
+      o.rt = {};
+      return db("/players?limit=40&ids=" + req.ids.join(",")).then(function (r) {
         var P = (r && r.players) || {}, have = Object.keys(P).filter(function (id) { return P[id].length; });
         return Promise.all(have.map(function (id) {
           return g("/v1/players/" + id + "/match-history").catch(function () { return []; }).then(function (mh) {
             var ex = extras(P[id].filter(function (x) { return x[2] !== "street_brawl"; }), mh);
             if (!ex.length) return;
-            var t = o.stats[id] || (o.stats[id] = { m: 0, w: 0, k: 0, d: 0, a: 0, h: null });
+            // matches only the Orange Track database has, sent separately so the mod can keep them between refreshes
+            var t = o.rt[id] = { m: 0, w: 0, k: 0, d: 0, a: 0, h: null, x: ex.length };
             var hn = String((req.heroes || {})[id] || "").toLowerCase();
-            t.x = ex.length;
             ex.forEach(function (x) {
               if (x[4] === null) return;                 // result unknown: not counted in totals
               t.m++; t.w += x[4]; t.k += x[5]; t.d += x[6]; t.a += x[7];
