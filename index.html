@@ -57,9 +57,9 @@
                        +(T.lh / tt).toFixed(1), +(100 * T.acc / T.m).toFixed(1), +(100 * T.crit / T.m).toFixed(1)];
       hs.sort(function (a, b) { return b.m - a.m; });
       o.heroes = hs.slice(0, 5).map(function (h) { return [names[h.id] || ("#" + h.id), h.m, h.w, h.k, h.d, h.a]; });
-      o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).slice(0, 10).map(function (m) {
+      o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).slice(0, 20).map(function (m) {
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
-        return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time];
+        return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time, 0, m.match_id];
       });
       // rank after each ranked match (badge = tier digits + subrank digit), oldest first
       o.rh = mh.filter(function (m) { return m.ranked_display_badge; }).sort(function (a, b) { return (a.start_time || 0) - (b.start_time || 0); }).slice(-40).map(function (m) {
@@ -82,16 +82,121 @@
           });
           o.heroes.sort(function (a, b) { return b[1] - a[1]; }); o.heroes = o.heroes.slice(0, 5);
         }
-        o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1]; }))
-          .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); }).slice(0, 10);
+        o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1, x[12] ? "db:" + x[12] : 0]; }))
+          .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); }).slice(0, 20);
       }
       document.title = "RP:" + JSON.stringify(o);
     });
+  }
+  // ---- shared lookups (cached) ----
+  var heroCache = null;
+  function heroes() {   // id -> [name, image path inside the game]
+    if (heroCache) return heroCache;
+    heroCache = g("/v1/assets/heroes").then(function (a) {
+      var by = {}, byName = {};
+      a.forEach(function (x) {
+        var im = ((x.images && (x.images.icon_image_small || x.images.icon_hero_card)) || "").replace(/^.*\/images\//, "").replace(/\.(png|webp)$/, "");
+        by[x.id] = [x.name, im];
+        var k = String(x.name || "").toLowerCase(), good = x.player_selectable && !x.disabled;
+        if (k && (!(k in byName) || good)) byName[k] = x.id;
+      });
+      return { by: by, byName: byName };
+    }).catch(function () { heroCache = null; return { by: {}, byName: {} }; });
+    return heroCache;
+  }
+  function items() {    // shop item id -> [image path inside the game, tier, name, slot]; kept for 3 days
+    try { var c = JSON.parse(localStorage.getItem("rt_items") || "null"); if (c && Date.now() - c.t < 3 * 86400000 && c.m) return Promise.resolve(c.m); } catch (e) { }
+    return g("/v1/assets/items/by-type/upgrade").then(function (a) {
+      var m = {};
+      a.forEach(function (x) {
+        var im = (x.shop_image || x.image || "").replace(/^.*\/images\//, "").replace(/\.(png|webp)$/, "");
+        m[x.id] = [im, x.item_tier || 0, x.name || "", x.item_slot_type || ""];
+      });
+      try { localStorage.setItem("rt_items", JSON.stringify({ t: Date.now(), m: m })); } catch (e) { }
+      return m;
+    }).catch(function () { return {}; });
+  }
+  function steamNames(ids) {
+    if (!ids.length) return Promise.resolve({});
+    return g("/v1/players/steam?account_ids=" + ids.join(",")).then(function (a) {
+      var o = {}; (a || []).forEach(function (x) { o[x.account_id] = x.personaname || ""; }); return o;
+    }).catch(function () { return {}; });
+  }
+  function ranksOf(ids) {
+    if (!ids.length) return Promise.resolve({});
+    return g("/v1/players/rank?account_ids=" + ids.join(",")).then(function (a) {
+      var o = {}; (a || []).forEach(function (x) { o[x.account_id] = (x.rank || 0) * 10 + (x.subrank || 0); }); return o;
+    }).catch(function () { return {}; });
+  }
+  // ---- one match, whole scoreboard ----
+  // players: [acc, name, hero, heroImg, team, k, d, a, souls, lastHits, denies, level, heroDmg, healing, dmgTaken, objDmg, badge, [item indexes]]
+  function matchInfo(req) {
+    var o = { n: req.n || 0, ref: req.ref, ok: false, players: [], items: [], err: "" };
+    var done = function () { document.title = "RM:" + JSON.stringify(o); };
+    var ref = String(req.ref || "");
+    if (ref.indexOf("db:") === 0) {
+      Promise.all([db("/match?key=" + encodeURIComponent(ref.slice(3))), heroes()]).then(function (r) {
+        var m = r[0], H = r[1];
+        if (!m || !m.ok) { o.err = (m && m.error) || "not found"; done(); return; }
+        o.src = "db"; o.start = m.start; o.dur = m.dur; o.mode = m.mode === "street_brawl" ? "Street Brawl" : "Normal"; o.win = m.win; o.uploaders = m.uploaders;
+        var ids = m.players.map(function (p) { return p.acc; });
+        return ranksOf(ids).then(function (rk) {
+          o.badgeNow = 1;
+          o.players = m.players.map(function (p) {
+            var hid = H.byName[String(p.hero || "").toLowerCase()], h = H.by[hid] || [p.hero || "?", ""];
+            return [p.acc, p.name || "", h[0], h[1], p.team, p.k, p.d, p.a, p.souls, null, null, p.lvl, null, null, null, p.obj, rk[p.acc] || 0, []];
+          });
+          o.ok = true; done();
+        });
+      }).catch(function (e) { o.err = String(e); done(); });
+      return;
+    }
+    Promise.all([g("/v1/matches/" + (+ref) + "/metadata"), heroes(), items()]).then(function (r) {
+      var mi = (r[0] && r[0].match_info) || r[0], H = r[1], I = r[2], used = {};
+      o.src = "api"; o.id = mi.match_id; o.start = mi.start_time; o.dur = mi.duration_s; o.win = mi.winning_team;
+      o.mode = mi.game_mode === 4 ? "Street Brawl" : (mi.match_mode === 4 ? "Ranked" : (mi.match_mode === 1 ? "Unranked" : "Normal"));
+      var ps = mi.players || [];
+      return steamNames(ps.map(function (p) { return p.account_id; })).then(function (nm) {
+        o.players = ps.map(function (p) {
+          var st = (p.stats && p.stats.length) ? p.stats[p.stats.length - 1] : {}, h = H.by[p.hero_id] || ["#" + p.hero_id, ""];
+          var its = [];
+          (p.items || []).forEach(function (it) {
+            if (it.sold_time_s || !I[it.item_id]) return;
+            if (!(it.item_id in used)) { used[it.item_id] = o.items.length; o.items.push(I[it.item_id].slice(0, 3)); }
+            its.push(used[it.item_id]);
+          });
+          var badge = (p.player_rank_data && p.player_rank_data.initial_display_rank) || 0;
+          return [p.account_id, nm[p.account_id] || "", h[0], h[1], p.team, p.kills, p.deaths, p.assists, p.net_worth, p.last_hits, p.denies, p.level,
+                  st.player_damage || 0, (st.player_healing || 0) + (st.teammate_healing || 0), st.player_damage_taken || 0, st.boss_damage || 0, badge, its];
+        });
+        o.ok = true; done();
+      });
+    }).catch(function (e) { o.err = String(e); done(); });
+  }
+  // ---- find a player: account id, Steam ID / profile link, StatLocker link, or a name ----
+  function search(req) {
+    var q = String(req.q || "").trim(), o = { n: req.n || 0, q: q, results: [], err: "" };
+    var done = function () { document.title = "RS:" + JSON.stringify(o); };
+    var id = 0, m;
+    if ((m = q.match(/(7656119\d{10})/))) id = Number(BigInt(m[1]) - 76561197960265728n);
+    else if ((m = q.match(/(?:profile|players|account)s?\/(\d{3,10})(?!\d)/i)) || (m = q.match(/^\[?U:1:(\d{3,10})\]?$/i)) || (m = q.match(/^(\d{3,10})$/))) id = +m[1];
+    var find = id ? Promise.resolve([{ account_id: id }]) :
+      (q.length < 2 ? Promise.resolve([]) : g("/v1/players/steam-search?limit=12&search_query=" + encodeURIComponent(q.replace(/^.*steamcommunity\.com\/id\//i, "").replace(/\/.*$/, ""))).catch(function (e) { if (String(e).indexOf("404") >= 0) return []; throw e; }));
+    find.then(function (list) {
+      list = (list || []).slice(0, 12);
+      var ids = list.map(function (x) { return x.account_id; });
+      return Promise.all([ranksOf(ids), id ? steamNames(ids) : Promise.resolve({})]).then(function (r) {
+        o.results = list.map(function (x) { return [x.account_id, x.personaname || r[1][x.account_id] || "", x.matches_played_last_30d == null ? null : x.matches_played_last_30d, r[0][x.account_id] || 0]; });
+        done();
+      });
+    }).catch(function (e) { o.err = String(e); done(); });
   }
   function run() {
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
     if (req && req.type === "profile") { profile(req); return; }
+    if (req && req.type === "match") { matchInfo(req); return; }
+    if (req && req.type === "search") { search(req); return; }
     if (req && req.type === "upload") {
       if (!DB_URL) { document.title = "RU:" + JSON.stringify({ n: req.n || 0, ok: false, error: "no database set" }); return; }
       db("/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req.data) })
