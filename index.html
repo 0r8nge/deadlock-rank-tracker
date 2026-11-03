@@ -17,6 +17,25 @@
     var starts = (apiMatches || []).map(function (m) { return m.start_time || 0; });
     return (ours || []).filter(function (x) { return !starts.some(function (s) { return Math.abs(s - x[0]) < 1200; }); });
   }
+  // The game's browser only passes on the first ~4000 characters of the page title, so long answers
+  // go out in pieces: "RX:" chunks, the mod asks for the next one by changing the #hash.
+  var outbox = null, CHUNK = 2400;
+  function send(prefix, obj) {
+    var s = JSON.stringify(obj);
+    if (s.length <= 3800) { document.title = prefix + s; return; }
+    var parts = [], i = 0;
+    while (i < s.length) {
+      var j = Math.min(s.length, i + CHUNK);
+      var c = s.charCodeAt(j - 1); if (j < s.length && c >= 0xD800 && c <= 0xDBFF) j--;   // don't split an emoji in half
+      parts.push(s.slice(i, j)); i = j;
+    }
+    outbox = { n: obj.n, p: prefix, parts: parts };
+    chunk(0);
+  }
+  function chunk(i) {
+    if (!outbox || i >= outbox.parts.length) return;
+    document.title = "RX:" + JSON.stringify({ n: outbox.n, i: i, c: outbox.parts.length, p: outbox.p, d: outbox.parts[i] });
+  }
   function g(u) { return fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
   // mode: all | ranked | unranked | street_brawl
   var MODES = {
@@ -33,7 +52,10 @@
       g("/v1/assets/ranks").then(function (a) { a.forEach(function (x) { tiers[x.tier] = [x.name, x.color || ""]; }); }).catch(function (e) { o.err += "tiers " + e + ";"; }),
       g("/v1/players/" + id + "/rank").then(function (r) { o.rank = [r.rank, r.subrank]; }).catch(function (e) { o.err += "rank " + e + ";"; }),
       g("/v1/players/" + id + "/match-history").then(function (a) { mh = a || []; }).catch(function (e) { o.err += "history " + e + ";"; }),
-      db("/players?limit=100&ids=" + id).then(function (r) { ours = (r && r.players && r.players[id]) || []; }).catch(function (e) { o.err += "db " + e + ";"; })
+      db("/players?limit=2000&ids=" + id).then(function (r) {
+        if (!r || r.ok === false || !r.players) { o.dberr = (r && r.error) || "no answer"; return; }
+        ours = r.players[id] || []; o.dbn = ours.length;
+      }).catch(function (e) { o.dberr = String(e); })
     ];
     M.calls.forEach(function (q) {
       jobs.push(g("/v1/players/hero-stats?account_ids=" + id + q).then(function (a) { hsAll = hsAll.concat(a || []); }).catch(function (e) { o.err += "stats " + e + ";"; }));
@@ -57,7 +79,7 @@
                        +(T.lh / tt).toFixed(1), +(100 * T.acc / T.m).toFixed(1), +(100 * T.crit / T.m).toFixed(1)];
       hs.sort(function (a, b) { return b.m - a.m; });
       o.heroes = hs.slice(0, 5).map(function (h) { return [names[h.id] || ("#" + h.id), h.m, h.w, h.k, h.d, h.a]; });
-      o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).slice(0, 20).map(function (m) {
+      o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).map(function (m) {
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
         return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time, 0, m.match_id];
       });
@@ -83,9 +105,12 @@
           o.heroes.sort(function (a, b) { return b[1] - a[1]; }); o.heroes = o.heroes.slice(0, 5);
         }
         o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1, x[12] ? "db:" + x[12] : 0]; }))
-          .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); }).slice(0, 20);
+          .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); });
       }
-      document.title = "RP:" + JSON.stringify(o);
+      var hn = [], hi = {};
+      o.recent = o.recent.map(function (r) { var k = String(r[0]); if (!(k in hi)) { hi[k] = hn.length; hn.push(k); } r[0] = hi[k]; return r; });
+      o.hn = hn; o.total = o.recent.length;
+      send("RP:", o);
     });
   }
   // ---- shared lookups (cached) ----
@@ -132,7 +157,7 @@
   // players: [acc, name, hero, heroImg, team, k, d, a, souls, lastHits, denies, level, heroDmg, healing, dmgTaken, objDmg, badge, [item indexes]]
   function matchInfo(req) {
     var o = { n: req.n || 0, ref: req.ref, ok: false, players: [], items: [], err: "" };
-    var done = function () { document.title = "RM:" + JSON.stringify(o); };
+    var done = function () { send("RM:", o); };
     var ref = String(req.ref || "");
     if (ref.indexOf("db:") === 0) {
       Promise.all([db("/match?key=" + encodeURIComponent(ref.slice(3))), heroes()]).then(function (r) {
@@ -176,7 +201,7 @@
   // ---- find a player: account id, Steam ID / profile link, StatLocker link, or a name ----
   function search(req) {
     var q = String(req.q || "").trim(), o = { n: req.n || 0, q: q, results: [], err: "" };
-    var done = function () { document.title = "RS:" + JSON.stringify(o); };
+    var done = function () { send("RS:", o); };
     var id = 0, m;
     if ((m = q.match(/(7656119\d{10})/))) id = Number(BigInt(m[1]) - 76561197960265728n);
     else if ((m = q.match(/(?:profile|players|account)s?\/(\d{3,10})(?!\d)/i)) || (m = q.match(/^\[?U:1:(\d{3,10})\]?$/i)) || (m = q.match(/^(\d{3,10})$/))) id = +m[1];
@@ -194,6 +219,7 @@
   function run() {
     var req;
     try { req = JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch (e) { document.title = "RT:alive"; return; }
+    if (req && req.type === "next") { if (outbox && outbox.n === req.n) chunk(req.i); return; }
     if (req && req.type === "profile") { profile(req); return; }
     if (req && req.type === "match") { matchInfo(req); return; }
     if (req && req.type === "search") { search(req); return; }
@@ -210,7 +236,7 @@
       Promise.all([
         g("/v1/players/" + req.me + "/mate-stats").then(function (a) { (a || []).forEach(function (x) { if (want[x.mate_id]) h.mates[x.mate_id] = [x.matches_played, x.wins]; }); }).catch(function (e) { h.err += "mates " + e + ";"; }),
         g("/v1/players/" + req.me + "/enemy-stats").then(function (a) { (a || []).forEach(function (x) { if (want[x.enemy_id]) h.enemies[x.enemy_id] = [x.matches_played, x.wins]; }); }).catch(function (e) { h.err += "enemies " + e + ";"; })
-      ]).then(function () { document.title = "RH:" + JSON.stringify(h); });
+      ]).then(function () { send("RH:", h); });
       return;
     }
     if (req && req.type === "cfg") {
@@ -263,7 +289,7 @@
           });
         }));
       }).catch(function (e) { o.err += "db " + e + ";"; });
-    }).then(function () { document.title = "RT:" + JSON.stringify(o); });
+    }).then(function () { send("RT:", o); });
   }
   window.addEventListener("hashchange", run);
   run();
