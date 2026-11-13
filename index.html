@@ -36,7 +36,17 @@
     if (!outbox || i >= outbox.parts.length) return;
     document.title = "RX:" + JSON.stringify({ n: outbox.n, i: i, c: outbox.parts.length, p: outbox.p, d: outbox.parts[i] });
   }
-  function g(u) { return fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  // The mod keeps this page open and only changes the #hash for each request, so answers are cached in memory:
+  // game assets for the whole session, player data for 45 seconds (a profile you go back to is instant).
+  var memo = {};
+  function g(u) {
+    var c = memo[u], now = Date.now();
+    if (c && (u.indexOf("/v1/assets/") === 0 || now - c.t < 45000)) return c.p;
+    var p = fetch(A + u).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+    memo[u] = { t: now, p: p };
+    p.catch(function () { if (memo[u] && memo[u].p === p) delete memo[u]; });
+    return p;
+  }
   // mode: all | ranked | unranked | street_brawl
   var MODES = {
     all:          { calls: ["&game_mode=normal&match_mode=ranked,unranked", "&game_mode=street_brawl"], keep: function (m) { return (m.game_mode === 1 && (m.match_mode === 1 || m.match_mode === 4)) || m.game_mode === 4; } },
@@ -81,7 +91,8 @@
       o.heroes = hs.slice(0, 5).map(function (h) { return [names[h.id] || ("#" + h.id), h.m, h.w, h.k, h.d, h.a]; });
       o.recent = mh.filter(M.keep).sort(function (a, b) { return (b.start_time || 0) - (a.start_time || 0); }).map(function (m) {
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
-        return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time, 0, m.match_id];
+        var md = m.game_mode === 4 ? "b" : (m.match_mode === 4 ? "r" : "u");
+        return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time, 0, m.match_id, m.ranked_display_badge || 0, md];
       });
       // rank after each ranked match (badge = tier digits + subrank digit), oldest first
       o.rh = mh.filter(function (m) { return m.ranked_display_badge; }).sort(function (a, b) { return (a.start_time || 0) - (b.start_time || 0); }).slice(-40).map(function (m) {
@@ -104,13 +115,17 @@
           });
           o.heroes.sort(function (a, b) { return b[1] - a[1]; }); o.heroes = o.heroes.slice(0, 5);
         }
-        o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1, x[12] ? "db:" + x[12] : 0]; }))
+        o.recent = o.recent.concat(ex.map(function (x) { return [x[3], x[4], x[5], x[6], x[7], x[8], x[1], x[0], 1, x[12] ? "db:" + x[12] : 0, 0, x[2] === "street_brawl" ? "b" : "n"]; }))
           .sort(function (a, b) { return (b[7] || 0) - (a[7] || 0); });
       }
       var hn = [], hi = {};
       o.recent = o.recent.map(function (r) { var k = String(r[0]); if (!(k in hi)) { hi[k] = hn.length; hn.push(k); } r[0] = hi[k]; return r; });
       o.hn = hn; o.total = o.recent.length;
-      send("RP:", o);
+      heroes().then(function (H) {                       // hero pictures (paths inside the game) for every hero shown
+        o.himg = {};
+        hn.concat(o.heroes.map(function (h) { return String(h[0]); })).forEach(function (nm) { var x = H.by[H.byName[String(nm).toLowerCase()]]; if (x && x[1]) o.himg[nm] = x[1]; });
+        send("RP:", o);
+      });
     });
   }
   // ---- shared lookups (cached) ----
@@ -289,6 +304,11 @@
           });
         }));
       }).catch(function (e) { o.err += "db " + e + ";"; });
+    }).then(function () {
+      return heroes().then(function (H) {
+        o.himg = {};
+        Object.keys(req.heroes || {}).forEach(function (id) { var nm = String(req.heroes[id] || ""), x = H.by[H.byName[nm.toLowerCase()]]; if (x && x[1]) o.himg[nm] = x[1]; });
+      });
     }).then(function () { send("RT:", o); });
   }
   window.addEventListener("hashchange", run);
