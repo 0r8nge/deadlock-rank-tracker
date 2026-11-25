@@ -5,20 +5,19 @@
 <script>
 (function () {
   var A = "https://api.deadlock-api.com";
-  // ↓↓↓ Paste your Cloudflare Worker URL between the quotes (e.g. "https://ranked-tracker-db.yourname.workers.dev")
+  
   var DB_URL = "https://ranked-tracker-db.luke-621.workers.dev";
-  // ↑↑↑ Leave it empty to turn the Ranked Tracker match database off.
+
   function db(path, opt) {
     if (!DB_URL) return Promise.resolve(null);
     return fetch(DB_URL.replace(/\/+$/, "") + path, opt).then(function (r) { return r.json(); });
   }
-  // matches from the Ranked Tracker database that the Deadlock API doesn't have (same start time within 20 min = same match)
+
   function extras(ours, apiMatches) {
     var starts = (apiMatches || []).map(function (m) { return m.start_time || 0; });
     return (ours || []).filter(function (x) { return !starts.some(function (s) { return Math.abs(s - x[0]) < 1200; }); });
   }
-  // The game's browser only passes on the first ~4000 characters of the page title, so long answers
-  // go out in pieces: "RX:" chunks, the mod asks for the next one by changing the #hash.
+
   var outbox = null, CHUNK = 2400;
   function send(prefix, obj) {
     var s = JSON.stringify(obj);
@@ -36,8 +35,7 @@
     if (!outbox || i >= outbox.parts.length) return;
     document.title = "RX:" + JSON.stringify({ n: outbox.n, i: i, c: outbox.parts.length, p: outbox.p, d: outbox.parts[i] });
   }
-  // The mod keeps this page open and only changes the #hash for each request, so answers are cached in memory:
-  // game assets for the whole session, player data for 45 seconds (a profile you go back to is instant).
+ 
   var memo = {};
   function g(u) {
     var c = memo[u], now = Date.now();
@@ -47,7 +45,7 @@
     p.catch(function () { if (memo[u] && memo[u].p === p) delete memo[u]; });
     return p;
   }
-  // mode: all | ranked | unranked | street_brawl
+
   var MODES = {
     all:          { calls: ["&game_mode=normal&match_mode=ranked,unranked", "&game_mode=street_brawl"], keep: function (m) { return (m.game_mode === 1 && (m.match_mode === 1 || m.match_mode === 4)) || m.game_mode === 4; } },
     ranked:       { calls: ["&game_mode=normal&match_mode=ranked"],   keep: function (m) { return m.game_mode === 1 && m.match_mode === 4; } },
@@ -72,7 +70,7 @@
     });
     Promise.all(jobs).then(function () {
       if (o.rank) o.tier = tiers[o.rank[0]] || null;
-      // merge per hero (the "all" mode combines normal + street brawl)
+    
       var by = {};
       hsAll.forEach(function (s) {
         var h = by[s.hero_id] || (by[s.hero_id] = { id: s.hero_id, m: 0, w: 0, k: 0, d: 0, a: 0, t: 0, dmg: 0, tak: 0, nw: 0, obj: 0, lh: 0, acc: 0, crit: 0 });
@@ -94,12 +92,12 @@
         var md = m.game_mode === 4 ? "b" : (m.match_mode === 4 ? "r" : "u");
         return [names[m.hero_id] || ("#" + m.hero_id), won, m.player_kills, m.player_deaths, m.player_assists, m.net_worth, m.match_duration_s, m.start_time, 0, m.match_id, m.ranked_display_badge || 0, md];
       });
-      // rank after each ranked match (badge = tier digits + subrank digit), oldest first
+      
       o.rh = mh.filter(function (m) { return m.ranked_display_badge; }).sort(function (a, b) { return (a.start_time || 0) - (b.start_time || 0); }).slice(-40).map(function (m) {
         var won = m.player_match_outcome === 1 ? 1 : (m.player_match_outcome === 2 ? 0 : (m.player_team === m.match_result ? 1 : 0));
         return [m.ranked_display_badge, m.ranked_delta || 0, won, m.start_time || 0];
       });
-      // add matches only the Ranked Tracker database has (mode filter: our matches only know normal vs street brawl)
+      
       var ex = extras(ours.filter(function (x) { return mode === "all" || (mode === "street_brawl" ? x[2] === "street_brawl" : false); }), mh);
       o.ext = ex.length;
       if (ex.length) {
@@ -121,16 +119,16 @@
       var hn = [], hi = {};
       o.recent = o.recent.map(function (r) { var k = String(r[0]); if (!(k in hi)) { hi[k] = hn.length; hn.push(k); } r[0] = hi[k]; return r; });
       o.hn = hn; o.total = o.recent.length;
-      heroes().then(function (H) {                       // hero pictures (paths inside the game) for every hero shown
+      heroes().then(function (H) {                       
         o.himg = {};
         hn.concat(o.heroes.map(function (h) { return String(h[0]); })).forEach(function (nm) { var x = H.by[H.byName[String(nm).toLowerCase()]]; if (x && x[1]) o.himg[nm] = x[1]; });
         send("RP:", o);
       });
     });
   }
-  // ---- shared lookups (cached) ----
+  
   var heroCache = null;
-  function heroes() {   // id -> [name, image path inside the game]
+  function heroes() {   
     if (heroCache) return heroCache;
     heroCache = g("/v1/assets/heroes").then(function (a) {
       var by = {}, byName = {};
@@ -144,7 +142,7 @@
     }).catch(function () { heroCache = null; return { by: {}, byName: {} }; });
     return heroCache;
   }
-  function items() {    // shop item id -> [image path inside the game, tier, name, slot]; kept for 3 days
+  function items() {    
     try { var c = JSON.parse(localStorage.getItem("rt_items") || "null"); if (c && Date.now() - c.t < 3 * 86400000 && c.m) return Promise.resolve(c.m); } catch (e) { }
     return g("/v1/assets/items/by-type/upgrade").then(function (a) {
       var m = {};
@@ -168,8 +166,7 @@
       var o = {}; (a || []).forEach(function (x) { o[x.account_id] = (x.rank || 0) * 10 + (x.subrank || 0); }); return o;
     }).catch(function () { return {}; });
   }
-  // ---- one match, whole scoreboard ----
-  // players: [acc, name, hero, heroImg, team, k, d, a, souls, lastHits, denies, level, heroDmg, healing, dmgTaken, objDmg, badge, [item indexes]]
+
   function matchInfo(req) {
     var o = { n: req.n || 0, ref: req.ref, ok: false, players: [], items: [], err: "" };
     var done = function () { send("RM:", o); };
@@ -213,7 +210,7 @@
       });
     }).catch(function (e) { o.err = String(e); done(); });
   }
-  // ---- find a player: account id, Steam ID / profile link, StatLocker link, or a name ----
+ 
   function search(req) {
     var q = String(req.q || "").trim(), o = { n: req.n || 0, q: q, results: [], err: "" };
     var done = function () { send("RS:", o); };
@@ -254,7 +251,7 @@
       ]).then(function () { send("RH:", h); });
       return;
     }
-    if (req && req.type === "sup") {                    // Ko-fi supporters, for the thank-you lists (asked once per session)
+    if (req && req.type === "sup") {                    
       db("/supporters").then(function (r) {
         send("RK:", { n: req.n || 0, ok: !!(r && r.ok), m: (r && r.monthly) || [], o: (r && r.once) || [], pm: (r && r.private_monthly) || 0, po: (r && r.private_once) || 0 });
       }).catch(function (e) { send("RK:", { n: req.n || 0, ok: false, m: [], o: [], err: String(e) }); });
@@ -291,7 +288,7 @@
         });
       }).catch(function (e) { o.err += "stats " + e + ";"; });
     }).then(function () {
-      if (!DB_URL || req.db === false) return;          // the mod only asks the database every 15 minutes
+      if (!DB_URL || req.db === false) return;          
       o.rt = {};
       return db("/players?limit=40&ids=" + req.ids.join(",")).then(function (r) {
         var P = (r && r.players) || {}, have = Object.keys(P).filter(function (id) { return P[id].length; });
@@ -299,11 +296,11 @@
           return g("/v1/players/" + id + "/match-history").catch(function () { return []; }).then(function (mh) {
             var ex = extras(P[id].filter(function (x) { return x[2] !== "street_brawl"; }), mh);
             if (!ex.length) return;
-            // matches only the Orange Track database has, sent separately so the mod can keep them between refreshes
+            
             var t = o.rt[id] = { m: 0, w: 0, k: 0, d: 0, a: 0, h: null, x: ex.length };
             var hn = String((req.heroes || {})[id] || "").toLowerCase();
             ex.forEach(function (x) {
-              if (x[4] === null) return;                 // result unknown: not counted in totals
+              if (x[4] === null) return;                 
               t.m++; t.w += x[4]; t.k += x[5]; t.d += x[6]; t.a += x[7];
               if (hn && String(x[3]).toLowerCase() === hn) { t.h = t.h || [0, 0, 0, 0, 0]; t.h[0]++; t.h[1] += x[4]; t.h[2] += x[5]; t.h[3] += x[6]; t.h[4] += x[7]; }
             });
