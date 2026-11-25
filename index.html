@@ -254,6 +254,12 @@
       ]).then(function () { send("RH:", h); });
       return;
     }
+    if (req && req.type === "sup") {                    // Ko-fi supporters, for the thank-you lists (asked once per session)
+      db("/supporters").then(function (r) {
+        send("RK:", { n: req.n || 0, ok: !!(r && r.ok), m: (r && r.monthly) || [], o: (r && r.once) || [], pm: (r && r.private_monthly) || 0, po: (r && r.private_once) || 0 });
+      }).catch(function (e) { send("RK:", { n: req.n || 0, ok: false, m: [], o: [], err: String(e) }); });
+      return;
+    }
     if (req && req.type === "cfg") {
       var c = {};
       try { c = JSON.parse(localStorage.getItem("rt_cfg") || "{}") || {}; } catch (e) { c = {}; }
