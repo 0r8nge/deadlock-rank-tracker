@@ -7,7 +7,7 @@
   var A = "https://api.deadlock-api.com";
   
   var DB_URL = "https://track.0range.uk";
-  var LATEST = { orange_track: "4.2", fov_slider: "4.3", test_menu: "5.3" };   // <- newest version of each mod on GameBanana
+  var LATEST = { orange_track: "4.2", fov_slider: "4.4", test_menu: "5.4" };   // <- newest version of each mod on GameBanana
 
   function db(path, opt) {
     if (!DB_URL) return Promise.resolve(null);
@@ -255,6 +255,17 @@
     // Newest version of each of my mods. Change these numbers after uploading a new version to GameBanana:
     // Orange Track 4.2+ shows a small "Update available" card when the player's copy is older.
     if (req && req.type === "latest") { send("RL:", { n: req.n || 0, ok: true, v: LATEST }); return; }
+    // Orange Track users (4.2+): which of these accounts use it, and "I use it" once per session
+    if (req && req.type === "users") {
+      db("/users?ids=" + (req.ids || []).slice(0, 100).join(",")).then(function (r) { send("RO:", { n: req.n || 0, ok: !!(r && r.ok), u: (r && r.users) || [] }); })
+        .catch(function (e) { send("RO:", { n: req.n || 0, ok: false, u: [], err: String(e) }); });
+      return;
+    }
+    if (req && req.type === "hello") {
+      db("/hello", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ acc: req.acc, ver: req.ver, hide: !!req.hide }) })
+        .then(function (r) { send("RH:", { n: req.n || 0, ok: !!(r && r.ok) }); }).catch(function (e) { send("RH:", { n: req.n || 0, ok: false, err: String(e) }); });
+      return;
+    }
     if (req && req.type === "sup") {                    
       db("/supporters").then(function (r) {
         send("RK:", { n: req.n || 0, ok: !!(r && r.ok), m: (r && r.monthly) || [], o: (r && r.once) || [], pm: (r && r.private_monthly) || 0, po: (r && r.private_once) || 0 });
